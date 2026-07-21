@@ -1,0 +1,36 @@
+version: '3.8'
+services:
+  # Emby 通知与控制网关
+  emby-notifier:
+    build: .
+    container_name: emby-notifier-gateway
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      # --- Emby 基础配置 ---
+      - EMBY_URL=http://your-emby-ip:8096
+      - EMBY_API_KEY=your_api_key_here
+      - REDIS_HOST=emby-notifier-cache
+      
+      # --- 功能开关 (true/false) ---
+      - ENABLE_COVER_IMAGE=true       # 是否发送媒体封面海报
+      
+      # --- 通知渠道配置 (可独立开启/关闭) ---
+      - NOTIFY_TELEGRAM_ENABLED=true  # 开启 Telegram 通知
+      - TELEGRAM_BOT_TOKEN=***
+      - TELEGRAM_CHAT_ID=***
+      
+      - NOTIFY_EMAIL_ENABLED=false    # 开启 邮箱通知
+      - EMAIL_SMTP_SERVER=smtp.example.com
+      - EMAIL_SENDER=bot@example.com
+      - EMAIL_PASSWORD=***
+      - EMAIL_RECEIVER=master@example.com
+    depends_on:
+      - redis
+
+  # 状态缓存
+  redis:
+    image: redis:alpine
+    container_name: emby-notifier-cache
+    restart: always
