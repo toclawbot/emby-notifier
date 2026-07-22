@@ -19,10 +19,10 @@ class TelegramNotifier(BaseNotifier):
         
         if image_url:
             url = f"https://api.telegram.org/bot{self.token}/sendPhoto"
-            payload = {"chat_id": self.chat_id, "caption": message, "photo": image_url}
+            payload = {"chat_id": self.chat_id, "caption": message, "photo": image_url, "parse_mode": "HTML"}
         else:
             url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-            payload = {"chat_id": self.chat_id, "text": message}
+            payload = {"chat_id": self.chat_id, "text": message, "parse_mode": "HTML"}
             
         resp = requests.post(url, json=payload, timeout=10)
         resp.raise_for_status()
