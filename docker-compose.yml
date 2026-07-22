@@ -8,9 +8,12 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # --- 时区设置 (核心) ---
+      - TZ=Asia/Shanghai
+      
       # --- Emby 基础配置 ---
       - EMBY_URL=http://your-emby-ip:8096
-      - EMBY_API_KEY=your_api_key_here
+      - EMBY_API_KEY=***
       - REDIS_HOST=emby-notifier-cache
       
       # --- 功能开关 (true/false) ---
@@ -26,11 +29,19 @@ services:
       - EMAIL_SENDER=bot@example.com
       - EMAIL_PASSWORD=***
       - EMAIL_RECEIVER=master@example.com
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     depends_on:
       - redis
 
-  # 状态缓存
+  # 状态缓存服务
   redis:
     image: redis:alpine
     container_name: emby-notifier-cache
     restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 128M
