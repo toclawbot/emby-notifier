@@ -109,8 +109,19 @@ def get_item_cover(item_id):
         return f"{EMBY_URL}{resp.json().get('PrimaryImage')}" if resp.json() else None
     except: return None
 
-def determine_item_type(item_name):
+def determine_item_type(item_name, item_id=None):
     if not item_name: return "电影"
+    # 优先尝试通过 API 获取类型 (更准确)
+    if item_id:
+        try:
+            resp = requests.get(f"{EMBY_URL}/emby/Items/{item_id}", params={"api_key": API_KEY}, timeout=2)
+            data = resp.json()
+            item_type = data.get("Type")
+            if item_type == "Series": return "剧集"
+            if item_type == "Movie": return "电影"
+        except:
+            pass
+            
     # 剧集判定：包含 Sxx, Exx, 或中文“集”
     if re.search(r'S\d+|E\d+|第\d+集|集|Episode', item_name, re.IGNORECASE):
         return "剧集"
@@ -128,6 +139,18 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
     logger.info(f"Received Webhook Payload: {json.dumps(data, ensure_ascii=False)}")
     event = data.get("Event")
     if not event: return {"error": "No event"}
+
+    # --- 频率控制 (防刷) ---
+    event_key = f"emby:event_lock:{user_name}:{event}"
+    if r.get(event_key):
+        logger.info(f"Ignored duplicate event {event} for {user_name} (locked)")
+        return {"status": "ignored", "reason": "rate_limit"}
+    
+    # 播放恢复事件锁 5 秒，防止 Emby 瞬间发送大量重复 Webhook
+    if event in ["PlaybackResume", "playback.resume", "playback.unpause"]:
+        r.setex(event_key, 5, "1")
+    else:
+        r.setex(event_key, 1, "1")
 
     # --- 用户信息提取优化 ---
     user_val = data.get("UserName") or data.get("User") or "未知用户"
@@ -175,7 +198,7 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
     body = ""
     if category == "播放通知":
         details = get_item_details(item_id)
-        item_type = determine_item_type(item_name)
+        item_type = determine_item_type(item_name, item_id)
         ep_info = parse_episodes(item_name)
         
         # 样式对齐参考：🎬 【类型】名称 (年份)
