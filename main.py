@@ -11,7 +11,7 @@ app = FastAPI(title="Emby Premium Notifier Gateway")
 r = redis.Redis(host=os.getenv("REDIS_HOST", "redis"), port=6379, decode_responses=True)
 
 EMBY_URL = (os.getenv("EMBY_URL") or "http://localhost:8096").rstrip('/')
-API_KEY = ***"EMBY_API_KEY")
+API_KEY = os.getenv("EMBY_API_KEY")
 notifiers = get_notifiers()
 
 # Redis 键名
