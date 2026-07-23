@@ -140,6 +140,13 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
     event = data.get("Event")
     if not event: return {"error": "No event"}
 
+    # --- 用户信息提取优化 ---
+    user_val = data.get("UserName") or data.get("User") or "未知用户"
+    if isinstance(user_val, dict):
+        user_name = user_val.get("Name") or user_val.get("UserName") or "未知用户"
+    else:
+        user_name = str(user_val)
+
     # --- 频率控制 (防刷) ---
     event_key = f"emby:event_lock:{user_name}:{event}"
     if r.get(event_key):
@@ -151,13 +158,6 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
         r.setex(event_key, 5, "1")
     else:
         r.setex(event_key, 1, "1")
-
-    # --- 用户信息提取优化 ---
-    user_val = data.get("UserName") or data.get("User") or "未知用户"
-    if isinstance(user_val, dict):
-        user_name = user_val.get("Name") or user_val.get("UserName") or "未知用户"
-    else:
-        user_name = str(user_val)
     
     # --- 设备与IP提取优化 ---
     session = data.get("Session", {})
@@ -183,6 +183,8 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
         item_id = item_obj.get("Id")
     if not item_id:
         item_id = data.get("ItemId") or data.get("Id")
+    
+    details = None # 初始化 details 避免后续 UnboundLocalError
     
     session_id = data.get("SessionId")
     if session_id:
