@@ -17,6 +17,7 @@ notifiers = get_notifiers()
 # Redis 键名
 SESSIONS_KEY = "emby:sessions"
 LAST_ACTIVE_USER = "emby:last_user"
+POS_CACHE_KEY = "emby:pos:"
 
 EVENT_CONFIG = {
     "PlaybackStart": ("开始播放", "▶️", "播放通知"),
@@ -27,6 +28,7 @@ EVENT_CONFIG = {
     "playback.stop": ("停止播放", "⏹️", "播放通知"),
     "playback.pause": ("暂停播放", "⏸️", "播放通知"),
     "playback.resume": ("恢复播放", "⏯️", "播放通知"),
+    "playback.unpause": ("恢复播放", "⏯️", "播放通知"),
     "ItemAdded": ("新资源入库", "📦", "库管理"),
     "ItemDeleted": ("资源删除", "🗑️", "库管理"),
     "ItemUpdated": ("资源更新", "🔄", "库管理"),
@@ -107,6 +109,13 @@ def get_item_cover(item_id):
         return f"{EMBY_URL}{resp.json().get('PrimaryImage')}" if resp.json() else None
     except: return None
 
+def determine_item_type(item_name):
+    if not item_name: return "电影"
+    # 剧集判定：包含 Sxx, Exx, 或中文“集”
+    if re.search(r'S\d+|E\d+|第\d+集|集|Episode', item_name, re.IGNORECASE):
+        return "剧集"
+    return "电影"
+
 @app.get("/test")
 async def test_notification(background_tasks: BackgroundTasks):
     msg = f"⭐ <b>系统通知 | 测试通知</b> ⭐\n\n👤 用户: <code>主人 (Test)</code>\n📱 设备: <code>OpenClaw-Test-Device</code>\n🌐 IP: <code>1.2.3.4</code>\n\n⏰ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -141,10 +150,8 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
     raw_item_name = None
     if isinstance(item_obj, dict):
         raw_item_name = item_obj.get("Name")
-    
     if not raw_item_name:
         raw_item_name = data.get("ItemName") or data.get("Name") or "未知资源"
-    
     item_name = clean_item_name(raw_item_name)
     
     # --- 资源 ID 提取优化 ---
@@ -168,23 +175,33 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
     body = ""
     if category == "播放通知":
         details = get_item_details(item_id)
-        item_type = "剧集" if ("S" in item_name and "E" in item_name) else "电影"
+        item_type = determine_item_type(item_name)
         ep_info = parse_episodes(item_name)
         
-        res_info = f"📺 <b>【{item_type}】{item_name}</b>"
+        # 样式对齐参考：🎬 【类型】名称 (年份)
+        res_info = f"🎬 <b>【{item_type}】{item_name}</b>"
         if details:
-            year = f"({details['year']})" if details['year'] else ""
+            year = f" ({details['year']})" if details['year'] else ""
             rating = f" ⭐ {details['rating']}" if details['rating'] else ""
-            res_info += f" {year}{rating}"
+            res_info += f"{year}{rating}"
         if ep_info: res_info += f" <code>{ep_info}</code>"
         
         body += f"{res_info}\n"
-        body += f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
-        body += f"👤 用户: <code>{user_name}</code>\n📱 设备: <code>{device_name}</code>\n🌐 IP: <code>{ip_address}</code>\n"
+        body += f"——————\n"
+        body += f"👤 用户: {user_name}\n📱 设备: {device_name}\n🌐 IP: {ip_address}\n"
         
+        # 进度记忆逻辑：如果当前没有进度，尝试从 Redis 读取
         pos_ticks = data.get("PositionTicks") or (session.get("PositionTicks") if isinstance(session, dict) else None)
+        if pos_ticks:
+            # 更新缓存
+            r.set(f"{POS_CACHE_KEY}{user_name}", pos_ticks)
+        else:
+            # 从缓存回溯
+            pos_ticks = r.get(f"{POS_CACHE_KEY}{user_name}")
+            
         stats = get_playback_stats(pos_ticks, details)
-        if stats: body += f"📊 进度: <code>{stats['percent']}</code> | {stats['current']} / {stats['total']}\n"
+        if stats: 
+            body += f"\n📊 进度: 「{stats['percent']}」 | 已播放: {stats['current']} / 总时长: {stats['total']}\n"
             
     elif category == "用户操作":
         body += f"👤 用户名: <code>{user_name}</code>\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
@@ -199,15 +216,17 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
         body += f"🔔 事件详情: <code>{event}</code>\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
         body += f"👤 用户: <code>{user_name}</code>\n📱 设备: <code>{device_name}</code>\n🌐 IP: <code>{ip_address}</code>\n"
 
+    # 剧情提取：强制保证在开始播放等事件中尽可能显示
     plot = ""
-    if category == "播放通知" and details:
+    if details:
         plot = details.get("plot")
     if not plot:
         plot = data.get("Plot") or data.get("剧情", "")
         
-    if plot: body += f"\n📝 <b>剧情:</b>\n<i>{plot}</i>\n"
+    if plot: 
+        body += f"\n📝 剧情:\n{plot}\n"
 
-    msg = f"{header}\n\n{body}\n\n⏰ 时间: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>"
+    msg = f"{header}\n\n{body}\n\n⏰ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     cover_url = get_item_cover(item_id) if item_id and os.getenv("ENABLE_COVER_IMAGE") == "true" else None
     for n in notifiers: background_tasks.add_task(n.send, msg, cover_url)
     
