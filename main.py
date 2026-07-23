@@ -120,21 +120,39 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
     event = data.get("Event")
     if not event: return {"error": "No event"}
 
-    # 精准路径提取
-    user_name = data.get("UserName") or data.get("User") or "未知用户"
+    # --- 用户信息提取优化 ---
+    user_val = data.get("UserName") or data.get("User") or "未知用户"
+    if isinstance(user_val, dict):
+        user_name = user_val.get("Name") or user_val.get("UserName") or "未知用户"
+    else:
+        user_name = str(user_val)
     
-    # 优先从 Session 中提取设备信息
+    # --- 设备与IP提取优化 ---
     session = data.get("Session", {})
-    if isinstance(session, str): # 有时是 ID 字符串
+    if isinstance(session, str): 
         device_name = "未知设备"
         ip_address = "未知 IP"
     else:
         device_name = session.get("DeviceName") or data.get("DeviceName") or "未知设备"
         ip_address = session.get("RemoteEndPoint") or data.get("RemoteEndPoint") or "未知 IP"
     
-    raw_item_name = data.get("ItemName") or data.get("Name") or "未知资源"
+    # --- 资源名称提取优化 ---
+    item_obj = data.get("Item", {})
+    raw_item_name = None
+    if isinstance(item_obj, dict):
+        raw_item_name = item_obj.get("Name")
+    
+    if not raw_item_name:
+        raw_item_name = data.get("ItemName") or data.get("Name") or "未知资源"
+    
     item_name = clean_item_name(raw_item_name)
-    item_id = data.get("ItemId") or data.get("Id")
+    
+    # --- 资源 ID 提取优化 ---
+    item_id = None
+    if isinstance(item_obj, dict):
+        item_id = item_obj.get("Id")
+    if not item_id:
+        item_id = data.get("ItemId") or data.get("Id")
     
     session_id = data.get("SessionId")
     if session_id:
@@ -164,8 +182,7 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
         body += f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
         body += f"👤 用户: <code>{user_name}</code>\n📱 设备: <code>{device_name}</code>\n🌐 IP: <code>{ip_address}</code>\n"
         
-        # 精准提取播放进度
-        pos_ticks = data.get("PositionTicks") or session.get("PositionTicks")
+        pos_ticks = data.get("PositionTicks") or (session.get("PositionTicks") if isinstance(session, dict) else None)
         stats = get_playback_stats(pos_ticks, details)
         if stats: body += f"📊 进度: <code>{stats['percent']}</code> | {stats['current']} / {stats['total']}\n"
             
@@ -182,7 +199,6 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
         body += f"🔔 事件详情: <code>{event}</code>\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
         body += f"👤 用户: <code>{user_name}</code>\n📱 设备: <code>{device_name}</code>\n🌐 IP: <code>{ip_address}</code>\n"
 
-    # 剧情提取逻辑增强：优先从详情接口获取，其次从 Webhook Payload 获取
     plot = ""
     if category == "播放通知" and details:
         plot = details.get("plot")
