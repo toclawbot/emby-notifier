@@ -36,27 +36,6 @@ EVENT_CONFIG = {
     "user.logout": ("登出成功", "🚪", "用户操作"),
 }
 
-def deep_search(data, target_key):
-    if isinstance(data, dict):
-        if target_key in data:
-            return data[target_key]
-        for v in data.values():
-            res = deep_search(v, target_key)
-            if res: return res
-    elif isinstance(data, list):
-        for item in data:
-            res = deep_search(item, target_key)
-            if res: return res
-    return None
-
-def smart_extract(data, keys, default="未知"):
-    for key in keys:
-        val = data.get(key)
-        if val is None: continue
-        if isinstance(val, dict): return val.get("Name") or val.get("UserName") or str(val)
-        return str(val)
-    return default
-
 def clean_item_name(text):
     if not text or text == "未知资源": return "未知资源"
     patterns = [
@@ -88,22 +67,25 @@ def parse_episodes(item_name):
 
 def format_ticks(ticks):
     if not ticks: return "00:00"
-    seconds = int(ticks) // 10000000
-    if seconds >= 3600:
-        return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
-    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+    try:
+        seconds = int(ticks) // 10000000
+        if seconds >= 3600:
+            return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
+        return f"{seconds // 60:02d}:{seconds % 60:02d}"
+    except: return "00:00"
 
 def get_item_details(item_id):
     if not item_id: return None
     try:
-        resp = requests.get(f"{EMBY_URL}/emby/Items/{item_id}", params={"api_key": API_KEY, "fields": "RunTimeTicks,CommunityRating,ProductionYear,Genres"}, timeout=5)
+        resp = requests.get(f"{EMBY_URL}/emby/Items/{item_id}", params={"api_key": API_KEY, "fields": "RunTimeTicks,CommunityRating,ProductionYear,Genres,Plot"}, timeout=5)
         data = resp.json()
         return {
             "total_ticks": data.get("RunTimeTicks"),
             "rating": data.get("CommunityRating"),
             "year": data.get("ProductionYear"),
             "genres": ",".join(data.get("Genres", [])),
-            "name": data.get("Name")
+            "name": data.get("Name"),
+            "plot": data.get("Plot")
         }
     except Exception as e:
         logger.error(f"Failed to get item details for {item_id}: {e}")
@@ -112,7 +94,9 @@ def get_item_details(item_id):
 def get_playback_stats(current_ticks, details):
     if not current_ticks or not details or not details["total_ticks"]: return None
     try:
-        curr_sec, total_sec = int(current_ticks)//10000000, int(details["total_ticks"])//10000000
+        curr_sec = int(current_ticks) // 10000000
+        total_sec = int(details["total_ticks"]) // 10000000
+        if total_sec == 0: return None
         percent = min(100.0, max(0.0, (curr_sec / total_sec * 100)))
         return {"percent": f"{percent:.1f}%", "current": format_ticks(current_ticks), "total": format_ticks(details["total_ticks"])}
     except: return None
@@ -136,12 +120,21 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
     event = data.get("Event")
     if not event: return {"error": "No event"}
 
-    user_name = smart_extract(data, ["UserName", "User", "userId", "userName"])
-    device_name = smart_extract(data, ["DeviceName", "Device", "Client"])
-    ip_address = smart_extract(data, ["RemoteEndPoint", "RemoteAddress", "IP"])
-    raw_item_name = smart_extract(data, ["Name", "ItemName", "Title"])
+    # 精准路径提取
+    user_name = data.get("UserName") or data.get("User") or "未知用户"
+    
+    # 优先从 Session 中提取设备信息
+    session = data.get("Session", {})
+    if isinstance(session, str): # 有时是 ID 字符串
+        device_name = "未知设备"
+        ip_address = "未知 IP"
+    else:
+        device_name = session.get("DeviceName") or data.get("DeviceName") or "未知设备"
+        ip_address = session.get("RemoteEndPoint") or data.get("RemoteEndPoint") or "未知 IP"
+    
+    raw_item_name = data.get("ItemName") or data.get("Name") or "未知资源"
     item_name = clean_item_name(raw_item_name)
-    item_id = deep_search(data, "Id") or data.get("ItemId")
+    item_id = data.get("ItemId") or data.get("Id")
     
     session_id = data.get("SessionId")
     if session_id:
@@ -170,7 +163,10 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
         body += f"{res_info}\n"
         body += f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
         body += f"👤 用户: <code>{user_name}</code>\n📱 设备: <code>{device_name}</code>\n🌐 IP: <code>{ip_address}</code>\n"
-        stats = get_playback_stats(deep_search(data, "PositionTicks"), details)
+        
+        # 精准提取播放进度
+        pos_ticks = data.get("PositionTicks") or session.get("PositionTicks")
+        stats = get_playback_stats(pos_ticks, details)
         if stats: body += f"📊 进度: <code>{stats['percent']}</code> | {stats['current']} / {stats['total']}\n"
             
     elif category == "用户操作":
@@ -186,7 +182,13 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
         body += f"🔔 事件详情: <code>{event}</code>\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
         body += f"👤 用户: <code>{user_name}</code>\n📱 设备: <code>{device_name}</code>\n🌐 IP: <code>{ip_address}</code>\n"
 
-    plot = data.get("Plot", data.get("剧情", ""))
+    # 剧情提取逻辑增强：优先从详情接口获取，其次从 Webhook Payload 获取
+    plot = ""
+    if category == "播放通知" and details:
+        plot = details.get("plot")
+    if not plot:
+        plot = data.get("Plot") or data.get("剧情", "")
+        
     if plot: body += f"\n📝 <b>剧情:</b>\n<i>{plot}</i>\n"
 
     msg = f"{header}\n\n{body}\n\n⏰ 时间: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>"
@@ -197,7 +199,6 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
 
 @app.post("/control/{action}")
 async def control_emby(action: str, user: str = Query(None), background_tasks: BackgroundTasks = None):
-    # 确定目标用户
     target_user = user or r.get(LAST_ACTIVE_USER)
     if not target_user: return {"error": "No active user found"}
     
@@ -214,7 +215,6 @@ async def control_emby(action: str, user: str = Query(None), background_tasks: B
     try:
         requests.post(f"{EMBY_URL}/emby/Sessions/{session_id}/{action_map[action]}", params={"api_key": API_KEY}, timeout=5)
         
-        # 执行成功的闭环通知
         action_cn = {"pause": "暂停播放", "play": "恢复播放", "stop": "停止播放"}[action]
         details = get_item_details(item_id)
         item_name = details['name'] if details else "未知资源"
