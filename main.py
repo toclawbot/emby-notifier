@@ -119,6 +119,7 @@ async def test_notification(background_tasks: BackgroundTasks):
 @app.post("/webhook")
 async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
+    logger.info(f"Received Webhook Payload: {json.dumps(data, ensure_ascii=False)}")
     event = data.get("Event")
     if not event: return {"error": "No event"}
 
