@@ -123,12 +123,12 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
     event = data.get("Event")
     if not event: return {"error": "No event"}
 
-    user_name = smart_extract(data, ["UserName", "User", "userId", "userName"])
-    device_name = smart_extract(data, ["DeviceName", "Device", "UserAgent"])
-    ip_address = smart_extract(data, ["RemoteAddress", "IP"])
-    raw_item_name = smart_extract(data, ["ItemName", "Title"])
+    user_name = smart_extract(data, ["User.Name", "UserName", "User"])
+    device_name = smart_extract(data, ["Session.DeviceName", "DeviceName", "Device"])
+    ip_address = smart_extract(data, ["Session.RemoteEndPoint", "RemoteAddress", "IP"])
+    raw_item_name = smart_extract(data, ["Item.Name", "ItemName", "Title"])
     item_name = clean_item_name(raw_item_name)
-    item_id = data.get("ItemId")
+    item_id = data.get("ItemId") or data.get("Item", {}).get("Id")
     
     session_id = data.get("SessionId")
     if session_id:
@@ -157,7 +157,7 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
         body += f"{res_info}\n"
         body += f"⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
         body += f"👤 用户: <code>{user_name}</code>\n📱 设备: <code>{device_name}</code>\n🌐 IP: <code>{ip_address}</code>\n"
-        stats = get_playback_stats(data.get("PositionTicks"), details)
+        stats = get_playback_stats(data.get("PlaybackInfo", {}).get("PositionTicks"), details)
         if stats: body += f"📊 进度: <code>{stats['percent']}</code> | {stats['current']} / {stats['total']}\n"
             
     elif category == "用户操作":
