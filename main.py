@@ -52,12 +52,24 @@ def clean_item_name(text):
     return text
 
 def parse_episodes(item_name):
-    eps = re.findall(r'E(\d+)', item_name)
-    if not eps: return ""
-    nums = sorted([int(e) for e in eps])
+    # 提取 S01E01 这种标准格式
+    season_match = re.search(r'S(\d+)', item_name, re.IGNORECASE)
+    episode_matches = re.findall(r'E(\d+)', item_name, re.IGNORECASE)
+    
+    season_str = f"第 {season_match.group(1)} 季" if season_match else ""
+    
+    if not episode_matches:
+        # 如果没找到 E01，尝试找“第x集”
+        cn_ep_match = re.search(r'第\s*(\d+)\s*集', item_name)
+        if cn_ep_match:
+            ep_str = f"第 {cn_ep_match.group(1)} 集"
+            return f"{season_str} {ep_str}".strip()
+        return ""
+
+    nums = sorted([int(e) for e in episode_matches])
     is_continuous = all(nums[i] + 1 == nums[i+1] for i in range(len(nums)-1))
     if is_continuous:
-        return f"第 {nums[0]}-{nums[-1]} 集" if len(nums) > 1 else f"第 {nums[0]} 集"
+        ep_str = f"第 {nums[0]}-{nums[-1]} 集" if len(nums) > 1 else f"第 {nums[0]} 集"
     else:
         ranges, start = [], nums[0]
         for i in range(1, len(nums)):
@@ -65,7 +77,9 @@ def parse_episodes(item_name):
                 ranges.append(f"{start}-{nums[i-1]}" if start != nums[i-1] else f"{start}")
                 start = nums[i]
         ranges.append(f"{start}-{nums[-1]}" if start != nums[-1] else f"{start}")
-        return f"第 {', '.join(ranges)} 集"
+        ep_str = f"第 {', '.join(ranges)} 集"
+    
+    return f"{season_str} {ep_str}".strip()
 
 def format_ticks(ticks):
     if not ticks: return "00:00"
@@ -111,20 +125,35 @@ def get_item_cover(item_id):
 
 def determine_item_type(item_name, item_id=None):
     if not item_name: return "电影"
-    # 优先尝试通过 API 获取类型 (更准确)
+    
+    # 1. 优先尝试通过 API 获取类型 (最准确
     if item_id:
         try:
-            resp = requests.get(f"{EMBY_URL}/emby/Items/{item_id}", params={"api_key": API_KEY}, timeout=2)
+            # 增加 fields=Type 确保获取到类型
+            resp = requests.get(f"{EMBY_URL}/emby/Items/{item_id}", params={"api_key": API_KEY, "fields": "Type"}, timeout=2)
             data = resp.json()
             item_type = data.get("Type")
             if item_type == "Series": return "剧集"
             if item_type == "Movie": return "电影"
-        except:
-            pass
+            if item_type == "Episode": return "剧集" # 单集也属于剧集类
+        except Exception as e:
+            logger.error(f"API type detection failed: {e}")
             
-    # 剧集判定：包含 Sxx, Exx, 或中文“集”
-    if re.search(r'S\d+|E\d+|第\d+集|集|Episode', item_name, re.IGNORECASE):
+    # 2. 增强版正则判定：涵盖更多剧集特征
+    # 匹配 S01E01, S1E1, 1x01, 第1季, 第1集, EP01 等
+    series_patterns = [
+        r'S\d+E\d+',             # S01E01
+        r'S\d+',                 # S01
+        r'E\d+',                 # E01
+        r'\d+x\d+',              # 1x01
+        r'第\s*\d+\s*季',         # 第1季
+        r'第\s*\d+\s*集',         # 第1集
+        r'集',                   # 包含“集”字
+        r'Episode',              # 包含 Episode
+    ]
+    if any(re.search(p, item_name, re.IGNORECASE) for p in series_patterns):
         return "剧集"
+        
     return "电影"
 
 @app.get("/test")
@@ -215,18 +244,18 @@ async def emby_webhook(request: Request, background_tasks: BackgroundTasks):
         body += f"——————\n"
         body += f"👤 用户: {user_name}\n📱 设备: {device_name}\n🌐 IP: {ip_address}\n"
         
-        # 进度记忆逻辑：如果当前没有进度，尝试从 Redis 读取
-        pos_ticks = data.get("PositionTicks") or (session.get("PositionTicks") if isinstance(session, dict) else None)
-        if pos_ticks:
-            # 更新缓存
-            r.set(f"{POS_CACHE_KEY}{user_name}", pos_ticks)
-        else:
-            # 从缓存回溯
-            pos_ticks = r.get(f"{POS_CACHE_KEY}{user_name}")
-            
-        stats = get_playback_stats(pos_ticks, details)
-        if stats: 
-            body += f"\n📊 进度: 「{stats['percent']}」 | 已播放: {stats['current']} / 总时长: {stats['total']}\n"
+    # 进度记忆逻辑：如果当前进度，如果没有，则尝试从 Redis 读取
+    pos_ticks = data.get("PositionTicks") or (session.get("PositionTicks") if isinstance(session, dict) else None)
+    if pos_ticks:
+        # 更新缓存
+        r.set(f"{POS_CACHE_KEY}{user_name}", pos_ticks)
+    else:
+        # 从缓存回溯
+        pos_ticks = r.get(f"{POS_CACHE_KEY}{user_name}")
+        
+    stats = get_playback_stats(pos_ticks, details)
+    if stats: 
+        body += f"\n📊 进度: 「{stats['percent']}」 | 已播放: {stats['current']} / 总时长: {stats['total']}\n"
             
     elif category == "用户操作":
         body += f"👤 用户名: <code>{user_name}</code>\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
