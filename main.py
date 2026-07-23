@@ -36,6 +36,19 @@ EVENT_CONFIG = {
     "user.logout": ("登出成功", "🚪", "用户操作"),
 }
 
+def deep_search(data, target_key):
+    if isinstance(data, dict):
+        if target_key in data:
+            return data[target_key]
+        for v in data.values():
+            res = deep_search(v, target_key)
+            if res: return res
+    elif isinstance(data, list):
+        for item in data:
+            res = deep_search(item, target_key)
+            if res: return res
+    return None
+
 def smart_extract(data, keys, default="未知"):
     for key in keys:
         val = data.get(key)
