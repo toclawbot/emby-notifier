@@ -52,19 +52,24 @@ def clean_item_name(text):
     return text
 
 def parse_episodes(item_name):
-    # 提取 S01E01 这种标准格式
+    # 1. 提取原生的 SxxExx 格式 (如 S01E06)
+    raw_match = re.search(r'(S\d+E\d+)', item_name, re.IGNORECASE)
+    raw_str = raw_match.group(1).upper() if raw_match else ""
+    
+    
+    # 2. 提取数字用于生成中文描述
     season_match = re.search(r'S(\d+)', item_name, re.IGNORECASE)
     episode_matches = re.findall(r'E(\d+)', item_name, re.IGNORECASE)
     
     season_str = f"第 {season_match.group(1)} 季" if season_match else ""
     
     if not episode_matches:
-        # 如果没找到 E01，尝试找“第x集”
         cn_ep_match = re.search(r'第\s*(\d+)\s*集', item_name)
         if cn_ep_match:
             ep_str = f"第 {cn_ep_match.group(1)} 集"
-            return f"{season_str} {ep_str}".strip()
-        return ""
+            final_cn = f"{season_str} {ep_str}".strip()
+            return f"{final_cn} ({raw_str})" if raw_str else final_cn
+        return raw_str if raw_str else ""
 
     nums = sorted([int(e) for e in episode_matches])
     is_continuous = all(nums[i] + 1 == nums[i+1] for i in range(len(nums)-1))
@@ -79,7 +84,8 @@ def parse_episodes(item_name):
         ranges.append(f"{start}-{nums[-1]}" if start != nums[-1] else f"{start}")
         ep_str = f"第 {', '.join(ranges)} 集"
     
-    return f"{season_str} {ep_str}".strip()
+    final_cn = f"{season_str} {ep_str}".strip()
+    return f"{final_cn} ({raw_str})" if raw_str else final_cn
 
 def format_ticks(ticks):
     if not ticks: return "00:00"
